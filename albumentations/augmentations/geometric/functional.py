@@ -12,7 +12,6 @@ from albumentations.augmentations.utils import (
     angle_2pi_range,
     clipped,
     preserve_channel_dim,
-    preserve_shape,
 )
 from albumentations.core.bbox_utils import denormalize_bbox, normalize_bbox
 from albumentations.core.types import BoxInternalType, ColorType, D4Type, KeypointInternalType
@@ -114,7 +113,7 @@ def bbox_d4(bbox: BoxInternalType, group_member: D4Type, rows: int, cols: int) -
     - bbox (BoxInternalType): The bounding box to transform. This should be a structure specifying coordinates
         like (xmin, ymin, xmax, ymax).
     - group_member (D4Type): A string identifier for the `D_4` group transformation to apply.
-        Valid values are 'e', 'r90', 'r180', 'r270', 'v', 'hv', 'h', 't'.
+        Valid values are 'e', 'r90', 'r180', 'r270', 'v', 'hvt', 'h', 't'.
     - rows (int): The number of rows in the image, used to adjust transformations that depend on image dimensions.
     - cols (int): The number of columns in the image, used for the same purposes as rows.
 
@@ -135,9 +134,9 @@ def bbox_d4(bbox: BoxInternalType, group_member: D4Type, rows: int, cols: int) -
         "r180": lambda x: bbox_rot90(x, 2, rows, cols),  # Rotate 180 degrees
         "r270": lambda x: bbox_rot90(x, 3, rows, cols),  # Rotate 270 degrees
         "v": lambda x: bbox_vflip(x, rows, cols),  # Vertical flip
-        "hv": lambda x: bbox_transpose(x, 1, rows, cols),  # Transpose (reflect over second diagonal)
+        "hvt": lambda x: bbox_transpose(bbox_rot90(x, 2, rows, cols), rows, cols),  # Reflect over anti-diagonal
         "h": lambda x: bbox_hflip(x, rows, cols),  # Horizontal flip
-        "t": lambda x: bbox_transpose(x, 0, rows, cols),  # Transpose (reflect over main diagonal)
+        "t": lambda x: bbox_transpose(x, rows, cols),  # Transpose (reflect over main diagonal)
     }
 
     # Execute the appropriate transformation
@@ -155,7 +154,7 @@ def keypoint_rot90(
     cols: int,
     **params: Any,
 ) -> KeypointInternalType:
-    """Rotates a keypoint by 90 degrees CCW (see np.rot90)
+    """Rotates a keypoint by 90 degrees CCW
 
     Args:
         keypoint: A keypoint `(x, y, angle, scale)`.
@@ -170,11 +169,10 @@ def keypoint_rot90(
         ValueError: if factor not in set {0, 1, 2, 3}
 
     """
-    x, y, angle, scale = keypoint[:4]
+    x, y, angle, scale = keypoint
 
     if factor not in {0, 1, 2, 3}:
-        msg = "Parameter n must be in set {0, 1, 2, 3}"
-        raise ValueError(msg)
+        raise ValueError("Parameter factor must be in set {0, 1, 2, 3}")
 
     if factor == 1:
         x, y, angle = y, (cols - 1) - x, angle - math.pi / 2
@@ -226,9 +224,9 @@ def keypoint_d4(
         "r180": lambda x: keypoint_rot90(x, 2, rows, cols),  # Rotate 180 degrees
         "r270": lambda x: keypoint_rot90(x, 3, rows, cols),  # Rotate 270 degrees
         "v": lambda x: keypoint_vflip(x, rows, cols),  # Vertical flip
-        "hv": lambda x: keypoint_transpose(x, 1, rows, cols),  # Transpose (reflect over second diagonal)
+        "hvt": lambda x: keypoint_transpose(keypoint_rot90(x, 2, rows, cols), rows, cols),  # Reflect over anti diagonal
         "h": lambda x: keypoint_hflip(x, rows, cols),  # Horizontal flip
-        "t": lambda x: keypoint_transpose(x, 0, rows, cols),  # Transpose (reflect over main diagonal)
+        "t": lambda x: keypoint_transpose(x, rows, cols),  # Transpose (reflect over main diagonal)
     }
     # Execute the appropriate transformation
     if group_member in transformations:
@@ -330,7 +328,7 @@ def keypoint_rotate(
     return x, y, a + math.radians(angle), s
 
 
-@preserve_shape
+@preserve_channel_dim
 def elastic_transform(
     img: np.ndarray,
     alpha: float,
@@ -427,7 +425,7 @@ def elastic_transform(
 @preserve_channel_dim
 def resize(img: np.ndarray, height: int, width: int, interpolation: int = cv2.INTER_LINEAR) -> np.ndarray:
     img_height, img_width = img.shape[:2]
-    if height == img_height and width == img_width:
+    if (height, width) == img.shape[:2]:
         return img
     resize_fn = _maybe_process_in_chunks(cv2.resize, dsize=(width, height), interpolation=interpolation)
     return resize_fn(img)
@@ -915,7 +913,6 @@ def hflip_cv2(img: np.ndarray) -> np.ndarray:
     return cv2.flip(img, 1)
 
 
-@preserve_shape
 def d4(img: np.ndarray, group_member: D4Type) -> np.ndarray:
     """Applies a `D_4` symmetry group transformation to an image array.
 
@@ -931,9 +928,9 @@ def d4(img: np.ndarray, group_member: D4Type) -> np.ndarray:
       - 'r180': Rotate 180 degrees.
       - 'r270': Rotate 270 degrees counterclockwise.
       - 'v': Vertical flip.
-      - 'hv': Vertical and horizontal flip (combination).
-      - 't': Transpose (reflect over the main diagonal).
+      - 'hvt': Transpose over second diagonal
       - 'h': Horizontal flip.
+      - 't': Transpose (reflect over the main diagonal).
 
     Returns:
     - np.ndarray: The transformed image array.
@@ -953,7 +950,7 @@ def d4(img: np.ndarray, group_member: D4Type) -> np.ndarray:
         "r180": lambda x: rot90(x, 2),  # Rotate 180 degrees
         "r270": lambda x: rot90(x, 3),  # Rotate 270 degrees
         "v": vflip,  # Vertical flip
-        "hv": lambda x: hflip(vflip(x)),  # Horizontal and vertical flip
+        "hvt": lambda x: transpose(rot90(x, 2)),  # Reflect over anti-diagonal
         "h": hflip,  # Horizontal flip
         "t": transpose,  # Transpose (reflect over main diagonal)
     }
@@ -965,13 +962,27 @@ def d4(img: np.ndarray, group_member: D4Type) -> np.ndarray:
     raise ValueError(f"Invalid group member: {group_member}")
 
 
-@preserve_shape
+@preserve_channel_dim
 def random_flip(img: np.ndarray, code: int) -> np.ndarray:
     return cv2.flip(img, code)
 
 
 def transpose(img: np.ndarray) -> np.ndarray:
-    return img.transpose(1, 0, 2) if len(img.shape) > TWO else img.transpose(1, 0)
+    """Transposes the first two dimensions of an array of any dimensionality.
+    Retains the order of any additional dimensions.
+
+    Args:
+        img (np.ndarray): Input array.
+
+    Returns:
+        np.ndarray: Transposed array.
+    """
+    # Generate the new axes order
+    new_axes = list(range(img.ndim))
+    new_axes[0], new_axes[1] = 1, 0  # Swap the first two dimensions
+
+    # Transpose the array using the new axes order
+    return img.transpose(new_axes)
 
 
 def rot90(img: np.ndarray, factor: int) -> np.ndarray:
@@ -1039,12 +1050,11 @@ def bbox_flip(bbox: BoxInternalType, d: int, rows: int, cols: int) -> BoxInterna
     return bbox
 
 
-def bbox_transpose(bbox: KeypointInternalType, axis: int, rows: int, cols: int) -> KeypointInternalType:
+def bbox_transpose(bbox: KeypointInternalType, rows: int, cols: int) -> KeypointInternalType:
     """Transposes a bounding box along given axis.
 
     Args:
         bbox: A bounding box `(x_min, y_min, x_max, y_max)`.
-        axis: 0 - main axis, 1 - secondary axis.
         rows: Image rows.
         cols: Image cols.
 
@@ -1056,14 +1066,7 @@ def bbox_transpose(bbox: KeypointInternalType, axis: int, rows: int, cols: int) 
 
     """
     x_min, y_min, x_max, y_max = bbox[:4]
-    if axis not in {0, 1}:
-        msg = "Axis must be either 0 or 1."
-        raise ValueError(msg)
-    if axis == 0:
-        bbox = (y_min, x_min, y_max, x_max)
-    if axis == 1:
-        bbox = (1 - y_max, 1 - x_max, 1 - y_min, 1 - x_min)
-    return bbox
+    return (y_min, x_min, y_max, x_max)
 
 
 @angle_2pi_range
@@ -1135,12 +1138,11 @@ def keypoint_flip(keypoint: KeypointInternalType, d: int, rows: int, cols: int) 
 
 
 @angle_2pi_range
-def keypoint_transpose(keypoint: KeypointInternalType, axis: int, rows: int, cols: int) -> KeypointInternalType:
-    """Transposes a keypoint along a specified axis: main diagonal (0) or secondary diagonal (1).
+def keypoint_transpose(keypoint: KeypointInternalType, rows: int, cols: int) -> KeypointInternalType:
+    """Transposes a keypoint along a specified axis: main diagonal
 
     Args:
         keypoint: A keypoint `(x, y, angle, scale)`.
-        axis: 0 for transposition over the main diagonal, 1 for transposition over the secondary diagonal.
         rows: Total number of rows (height) in the image.
         cols: Total number of columns (width) in the image.
 
@@ -1153,21 +1155,12 @@ def keypoint_transpose(keypoint: KeypointInternalType, axis: int, rows: int, col
     """
     x, y, angle, scale = keypoint[:4]
 
-    if axis not in {0, 1}:
-        raise ValueError("Axis must be either 0 (main diagonal) or 1 (secondary diagonal).")
+    # Transpose over the main diagonal: swap x and y.
+    new_x, new_y = y, x
+    # Adjust angle to reflect the coordinate swap.
+    angle = np.pi / 2 - angle if angle <= np.pi else 3 * np.pi / 2 - angle
 
-    if axis == 0:
-        # Transpose over the main diagonal, swap x and y.
-        new_x, new_y = y, x
-        # Adjust angle to reflect the coordinate swap.
-        angle = np.pi / 2 - angle if angle <= np.pi else 3 * np.pi / 2 - angle
-    elif axis == 1:
-        # Transpose over the secondary diagonal, flip and swap x and y.
-        new_x, new_y = cols - x - 1, rows - y - 1  # Adjusted to reflect indices starting from 0.
-        # Adjust angle to reflect the mirrored swap.
-        angle = np.pi + angle if angle <= np.pi else angle
-
-    return (new_x, new_y, angle, scale)
+    return new_x, new_y, angle, scale
 
 
 @preserve_channel_dim
@@ -1226,7 +1219,7 @@ def pad_with_params(
     return pad_fn(img)
 
 
-@preserve_shape
+@preserve_channel_dim
 def optical_distortion(
     img: np.ndarray,
     k: int = 0,
@@ -1259,7 +1252,7 @@ def optical_distortion(
     return cv2.remap(img, map1, map2, interpolation=interpolation, borderMode=border_mode, borderValue=value)
 
 
-@preserve_shape
+@preserve_channel_dim
 def grid_distortion(
     img: np.ndarray,
     num_steps: int = 10,
@@ -1269,11 +1262,6 @@ def grid_distortion(
     border_mode: int = cv2.BORDER_REFLECT_101,
     value: Optional[ColorType] = None,
 ) -> np.ndarray:
-    """Perform a grid distortion of an input image.
-
-    Reference:
-        http://pythology.blogspot.sg/2014/03/interpolation-on-regular-distorted-grid.html
-    """
     height, width = img.shape[:2]
 
     x_step = width // num_steps
@@ -1323,7 +1311,7 @@ def grid_distortion(
     return remap_fn(img)
 
 
-@preserve_shape
+@preserve_channel_dim
 def elastic_transform_approx(
     img: np.ndarray,
     alpha: float,
