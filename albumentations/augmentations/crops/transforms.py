@@ -404,8 +404,8 @@ class _BaseRandomSizedCrop(DualTransform):
 
         crop_height = crop_coords[3] - crop_coords[1]
         crop_width = crop_coords[2] - crop_coords[0]
-        scale_x = self.size[0] / crop_width
-        scale_y = self.size[1] / crop_height
+        scale_x = self.size[1] / crop_width
+        scale_y = self.size[0] / crop_height
         return fgeometric.keypoints_scale(keypoint, scale_x, scale_y)
 
 
